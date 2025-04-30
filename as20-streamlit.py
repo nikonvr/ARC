@@ -264,12 +264,16 @@ def format_complex(c):
     if isinstance(c, complex):
         return f"{c.real:.4f}{c.imag:+.4f}j"
     return str(c)
-def format_complex_eps(c):
-    if isinstance(c, complex):
-        return f"{c.real:.4f}{c.imag:+.4f}j"
+def format_complex_sigfig(c, n=6):
+    if isinstance(c, complex) and np.isfinite(c.real) and np.isfinite(c.imag):
+        real_part_str = f"{c.real:.{n}g}"
+        imag_part = c.imag
+        imag_part_str = f"{imag_part:.{n}g}"
+        sign = "+" if imag_part >= 0 else ""
+        return f"{real_part_str}{sign}{imag_part_str}j"
     elif isinstance(c, (int, float)) and np.isfinite(c):
-         return f"{c:.4f}" # Afficher comme réel si pas complexe
-    return str(c) # Fallback
+         return f"{c:.{n}g}"
+    return "N/A"
 def format_bounds(bounds_list):
     if not bounds_list or len(bounds_list) != 5: return "N/A"
     names = ["rh", "ch", "rl", "cl", "ep"]
@@ -284,8 +288,16 @@ def format_bounds(bounds_list):
 @st.cache_data
 def convert_df_to_excel(df):
     output = io.BytesIO()
+    # Convert complex numbers to strings for Excel compatibility if needed
+    df_excel = df.copy()
+    for col in df_excel.columns:
+        if pd.api.types.is_complex_dtype(df_excel[col]):
+            df_excel[col] = df_excel[col].apply(lambda x: f"{x.real:.6g}{x.imag:+.6g}j" if pd.notna(x) else None)
+        elif df_excel[col].dtype == object: # Check if complex was stored as object
+             df_excel[col] = df_excel[col].apply(lambda x: f"{x.real:.6g}{x.imag:+.6g}j" if isinstance(x, complex) and pd.notna(x) else x)
+
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='OptimizationResults')
+        df_excel.to_excel(writer, index=False, sheet_name='OptimizationResults')
     processed_data = output.getvalue()
     return processed_data
 if 'optimization_results' not in st.session_state:
@@ -467,8 +479,7 @@ if start_button:
                 "Message": final_message,
                 "Num_Layers": params_run.get('num_layers', 'N/A'),
                 "a_Substrat": params_run.get('a_substrat', 'N/A'),
-                "nSub_real": params_run.get('nSub', np.nan+0j).real,
-                "nSub_imag": params_run.get('nSub', np.nan+0j).imag,
+                "nSub": params_run.get('nSub', np.nan+0j),
                 "Lambda_l0": params_run.get('l0', 'N/A'),
                 "MSE_Angles_Deg": str(params_run.get('mse_target_angles_deg', 'N/A')),
                 "MSE_Weights_Used": True,
@@ -483,14 +494,19 @@ if start_button:
                 "NFEV": result.nfev if result else 'N/A',
                 "NIT_Global": result.nit if result else 'N/A',
                 "Best_MSE_Weighted": np.nan,
-                "nH_n": np.nan, "nH_k": np.nan,
-                "nL_n": np.nan, "nL_k": np.nan,
+                "nH": np.nan + 0j,
+                "nL": np.nan + 0j,
                 "Epaisseur_um": np.nan,
-                "Epsilon_h_real": np.nan, "Epsilon_h_imag": np.nan,
-                "Epsilon_l_real": np.nan, "Epsilon_l_imag": np.nan
+                "Epsilon_h": np.nan + 0j,
+                "Epsilon_l": np.nan + 0j
             }
             best_params_tuple = None
             best_mse = np.inf
+            final_best_nH = np.nan + 0j
+            final_best_nL = np.nan + 0j
+            final_best_epaisseur = np.nan
+            epsilon_h = np.nan + 0j
+            epsilon_l = np.nan + 0j
             if result and result.x is not None and np.isfinite(result.fun):
                  best_params_tuple = result.x
                  best_mse = result.fun
@@ -502,14 +518,16 @@ if start_button:
                  epsilon_h = final_best_nH**2
                  epsilon_l = final_best_nL**2
                  results_dict.update({
-                    "nH_n": f"{final_best_nH.real:.6f}", "nH_k": f"{final_best_nH.imag:.6f}",
-                    "nL_n": f"{final_best_nL.real:.6f}", "nL_k": f"{final_best_nL.imag:.6f}",
-                    "Epaisseur_um": f"{final_best_epaisseur:.6f}",
-                    "Epsilon_h_real": f"{epsilon_h.real:.6f}", "Epsilon_h_imag": f"{epsilon_h.imag:.6f}",
-                    "Epsilon_l_real": f"{epsilon_l.real:.6f}", "Epsilon_l_imag": f"{epsilon_l.imag:.6f}"
+                    "nH": final_best_nH,
+                    "nL": final_best_nL,
+                    "Epaisseur_um": final_best_epaisseur,
+                    "Epsilon_h": epsilon_h,
+                    "Epsilon_l": epsilon_l
                  })
                  st.session_state.log_messages.append(f"  nH = {format_complex(final_best_nH)}\n")
                  st.session_state.log_messages.append(f"  nL = {format_complex(final_best_nL)}\n")
+                 st.session_state.log_messages.append(f"  εH = {format_complex(epsilon_h)}\n")
+                 st.session_state.log_messages.append(f"  εL = {format_complex(epsilon_l)}\n")
                  st.session_state.log_messages.append(f"  Épaisseur = {final_best_epaisseur:.6f} µm\n")
                  try:
                     plot_angles_deg_fine = np.linspace(0, 90, 181)
@@ -555,20 +573,20 @@ if st.session_state.result_df is not None:
             st.metric("NIT (Itér. Globales)", df_display.get("NIT_Global", "N/A"))
         with res_col2:
             st.metric("Meilleur MSE Pondéré", df_display.get("Best_MSE_Weighted", "N/A"))
-            st.metric("nH (n+ik)", f"{df_display.get('nH_n','?')}{df_display.get('nH_k','?').replace('-','−').replace('+','+') if isinstance(df_display.get('nH_k'), str) else ''}j")
-            st.metric("nL (n+ik)", f"{df_display.get('nL_n','?')}{df_display.get('nL_k','?').replace('-','−').replace('+','+') if isinstance(df_display.get('nL_k'), str) else ''}j")
-            st.metric("Épaisseur (µm)", df_display.get("Epaisseur_um", "N/A"))
+            nh_val = df_display.get('nH', np.nan + 0j)
+            nl_val = df_display.get('nL', np.nan + 0j)
+            st.metric("nH (n+ik)", format_complex_sigfig(nh_val, 6))
+            st.metric("nL (n+ik)", format_complex_sigfig(nl_val, 6))
+            st.metric("Épaisseur (µm)", f"{df_display.get('Epaisseur_um', np.nan):.6g}" if pd.notna(df_display.get('Epaisseur_um')) else "N/A")
         with res_col3:
-             st.metric("Couches (N)", df_display.get("Num_Layers", "N/A"))
-             st.metric("λ (µm)", df_display.get("Lambda_l0", "N/A"))
-             eps_h_real_str = df_display.get('Epsilon_h_real', '?')
-             eps_h_imag_str = df_display.get('Epsilon_h_imag', '?')
-             st.metric("εH (ε'+iε'')", f"{eps_h_real_str}{eps_h_imag_str.replace('-','−').replace('+','+') if isinstance(eps_h_imag_str, str) else ''}j")
-             eps_l_real_str = df_display.get('Epsilon_l_real', '?')
-             eps_l_imag_str = df_display.get('Epsilon_l_imag', '?')
-             st.metric("εL (ε'+iε'')", f"{eps_l_real_str}{eps_l_imag_str.replace('-','−').replace('+','+') if isinstance(eps_l_imag_str, str) else ''}j")
+             st.metric("Couches (N)", f"{df_display.get('Num_Layers', 'N/A')}")
+             st.metric("λ (µm)", f"{df_display.get('Lambda_l0', np.nan):.3f}" if pd.notna(df_display.get('Lambda_l0')) else "N/A")
+             eps_h_val = df_display.get('Epsilon_h', np.nan + 0j)
+             eps_l_val = df_display.get('Epsilon_l', np.nan + 0j)
+             st.metric("εH (ε'+iε'')", format_complex_sigfig(eps_h_val, 6))
+             st.metric("εL (ε'+iε'')", format_complex_sigfig(eps_l_val, 6))
         with st.expander("Voir tous les détails des paramètres et résultats"):
-            st.dataframe(st.session_state.result_df.T)
+            st.dataframe(st.session_state.result_df.astype(str).T)
         excel_data = convert_df_to_excel(st.session_state.result_df)
         st.download_button(
             label="📥 Télécharger les résultats (Excel)",
@@ -589,7 +607,7 @@ if st.session_state.final_plot_data is not None:
              mse_angles = st.session_state.last_params['mse_target_angles_deg']
              if len(mse_angles) > 0:
                   ax.axvspan(mse_angles[0], mse_angles[-1], color='lightgray', alpha=0.3, label='Zone Cible MSE')
-                  xlim_upper = mse_angles[-1] + 1
+                  xlim_upper = mse_angles[-1]
         ax.set_xlabel("Angle d'incidence (degrés)")
         ax.set_ylabel("Réflectance (échelle log)")
         ax.set_yscale('log')
@@ -597,12 +615,12 @@ if st.session_state.final_plot_data is not None:
         ax.legend(loc='best', fontsize='small')
         ax.set_ylim(1e-6, 1.1)
         ax.set_xlim(0, max(1.0, xlim_upper))
-        nH_str = format_complex(plot_data['nH'])
-        nL_str = format_complex(plot_data['nL'])
-        nSub_str = format_complex(plot_data['nSub'])
-        ep_str = f"{plot_data['ep']:.4f}"
+        nH_str = format_complex_sigfig(plot_data['nH'], 4)
+        nL_str = format_complex_sigfig(plot_data['nL'], 4)
+        nSub_str = format_complex_sigfig(plot_data['nSub'], 4)
+        ep_str = f"{plot_data['ep']:.4g}"
         mse_str = f"{plot_data['mse']:.3e}"
-        l0_str = f"{plot_data['l0']:.2f}"
+        l0_str = f"{plot_data['l0']:.3f}"
         status_str = plot_data['status']
         title = (f"Résultat Final ({status_str}) | MSE_pondéré: {mse_str} | λ={l0_str}µm\n"
                  f"nH={nH_str}, nL={nL_str}, ép={ep_str}µm | nSub={nSub_str}, N={plot_data['N']}")
@@ -613,4 +631,4 @@ else:
      with plot_placeholder.container():
           st.info("Le tracé de réflectance apparaîtra ici après une optimisation réussie.")
 st.sidebar.divider()
-st.sidebar.caption(f"Date/Heure actuelle: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.sidebar.caption(f"Date/Heure actuelle: {datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo).strftime('%Y-%m-%d %H:%M:%S %Z')}")
