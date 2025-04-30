@@ -377,25 +377,13 @@ Cette application vise à déterminer les propriétés optiques (indices de réf
 """
 small_font_css = """
 <style>
-/* Cibler les conteneurs de st.metric */
-div[data-testid="stMetric"] {
-    /* Ajustements globaux si nécessaire */
-}
-/* Cibler le label (texte au-dessus de la valeur) */
 div[data-testid="stMetric"] > label[data-testid="stMetricLabel"] > div {
-    font-size: 0.85rem !important; /* Taille réduite pour le label */
-    font-weight: 600 !important; /* Un peu plus gras */
-    /* color: #555 !important; */ /* Optionnel: couleur plus discrète */
+    font-size: 0.85rem !important;
+    font-weight: 600 !important;
 }
-/* Cibler la valeur principale */
 div[data-testid="stMetric"] > div[data-testid="stMetricValue"] {
-    font-size: 0.95rem !important; /* Taille réduite pour la valeur */
-    /* line-height: 1.2 !important; */ /* Optionnel: ajuster l'espacement */
+    font-size: 0.95rem !important;
 }
-/* Cibler la valeur delta (si elle était utilisée) */
-/* div[data-testid="stMetric"] > div[data-testid="stMetricDelta"] {
-    font-size: 0.75rem !important;
-} */
 </style>
 """
 with st.sidebar:
@@ -618,6 +606,9 @@ if start_button:
                  st.session_state.log_messages.append(f"  εH = {format_complex(epsilon_h)}\n")
                  st.session_state.log_messages.append(f"  εL = {format_complex(epsilon_l)}\n")
                  st.session_state.log_messages.append(f"  Épaisseur = {final_best_epaisseur:.6f} µm\n")
+                 nit_global = results_dict.get("NIT_Global", "N/A")
+                 max_iter_run = results_dict.get("Max_Iter", "N/A")
+                 st.session_state.log_messages.append(f"Itérations Globales: {nit_global}/{max_iter_run}\n")
                  try:
                     plot_angles_deg_fine = np.linspace(0, 90, 181)
                     plot_angles_rad_fine = np.radians(plot_angles_deg_fine)
