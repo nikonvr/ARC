@@ -288,14 +288,12 @@ def format_bounds(bounds_list):
 @st.cache_data
 def convert_df_to_excel(df):
     output = io.BytesIO()
-    # Convert complex numbers to strings for Excel compatibility if needed
     df_excel = df.copy()
     for col in df_excel.columns:
-        if pd.api.types.is_complex_dtype(df_excel[col]):
-            df_excel[col] = df_excel[col].apply(lambda x: f"{x.real:.6g}{x.imag:+.6g}j" if pd.notna(x) else None)
-        elif df_excel[col].dtype == object: # Check if complex was stored as object
+        if pd.api.types.is_complex_dtype(df_excel[col].dtype):
+             df_excel[col] = df_excel[col].apply(lambda x: f"{x.real:.6g}{x.imag:+.6g}j" if pd.notna(x) and isinstance(x, complex) else x)
+        elif df_excel[col].dtype == object:
              df_excel[col] = df_excel[col].apply(lambda x: f"{x.real:.6g}{x.imag:+.6g}j" if isinstance(x, complex) and pd.notna(x) else x)
-
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_excel.to_excel(writer, index=False, sheet_name='OptimizationResults')
     processed_data = output.getvalue()
@@ -312,6 +310,94 @@ if 'result_df' not in st.session_state:
     st.session_state.result_df = None
 st.set_page_config(layout="wide")
 st.title("🔬 Optimisation Multicouche Anti-Reflet (Recuit Simulé)")
+help_text = """
+### ❓ Aide - Optimisation de Couche Anti-Reflet
+
+**Objectif de l'Application**
+
+Cette application vise à déterminer les propriétés optiques (indices de réfraction complexes $n_H$, $n_L$) et l'épaisseur ($e$) d'une structure périodique de $N$ couches minces alternées (type H-L-H-L...) déposées sur un substrat, afin de minimiser la réflectance pour une lumière incidente à une longueur d'onde ($\lambda$) donnée, sur une plage angulaire spécifiée. L'objectif est de concevoir un revêtement anti-reflet.
+
+**Interface**
+
+* **Barre Latérale (Gauche) :** Contient tous les paramètres d'entrée pour la simulation et l'optimisation.
+* **Zone Principale (Droite) :** Affiche les logs, les résultats de l'optimisation et le tracé de la réflectance calculée.
+
+**Paramètres d'Entrée (Barre Latérale)**
+
+1.  **Paramètres Physiques :**
+    * `Nombre de couches (N)` : Nombre total de couches H et L dans la structure (ex: N=5 -> H L H L H).
+    * `a_substrat` : Paramètre lié à l'absorption du substrat. L'indice complexe du substrat est calculé comme $n_{Sub} = \sqrt{1 + i \cdot a_{sub}}$. Un $a_{sub} > 0$ implique un substrat absorbant.
+    * `λ (l0) (µm)` : Longueur d'onde de la lumière incidente dans le vide, en micromètres.
+
+2.  **Cible MSE :** Définit la plage angulaire sur laquelle la réflectance doit être minimisée.
+    * `Angle début (°)` : Angle d'incidence minimum (par rapport à la normale) pour le calcul de l'erreur.
+    * `Angle fin (°)` : Angle d'incidence maximum.
+    * `Pas angle (°)` : Incrément angulaire entre le début et la fin.
+    * *Pondération* : Une pondération linéaire est appliquée aux angles : l'erreur à `Angle fin` compte deux fois plus que l'erreur à `Angle début`. Cela force l'optimiseur à mieux performer aux angles plus élevés.
+
+3.  **Paramètres d'Optimisation (Dual Annealing) :** Contrôle l'algorithme d'optimisation globale `scipy.optimize.dual_annealing`.
+    * `Max Iterations (global)` : Nombre maximum d'itérations pour la phase de recherche globale (recuit simulé). Augmenter améliore les chances de trouver un bon minimum mais augmente le temps de calcul.
+    * `Température Initiale` : Température de départ pour le recuit.
+    * `Visit Parameter`, `Accept Parameter` : Paramètres contrôlant les probabilités d'exploration et d'acceptation de nouvelles solutions pendant le recuit.
+    * `Tolérance (local search)` : Critère d'arrêt pour la phase de recherche locale (L-BFGS-B) qui affine la solution après le recuit global.
+    * `Désactiver Recherche Locale` : Si coché, saute l'étape de recherche locale. Peut accélérer l'optimisation mais potentiellement au détriment de la précision finale de la solution.
+
+4.  **Bornes d'Optimisation :** Définissent l'espace de recherche pour les paramètres inconnus.
+    * `Indice Réel Min/Max (n H/L)` : Limites pour la partie réelle ($n$) des indices $n_H$ et $n_L$.
+    * `Indice Imag Min/Max (k H/L)` : Limites pour la partie imaginaire ($k$) des indices $n_H$ et $n_L$. $k \ge 0$ correspond à l'absorption.
+    * `Épaisseur Min/Max (µm)` : Limites pour l'épaisseur *individuelle* $e$ de chaque couche (supposée identique pour H et L dans ce modèle).
+
+**Processus (Clic sur "Démarrer Optimisation")**
+
+1.  **Validation :** Vérification de la cohérence des paramètres saisis.
+2.  **Optimisation :** Lancement de l'algorithme `dual_annealing`.
+    * Celui-ci tente de trouver les valeurs de $(n_H, n_L, e)$ (représentées par leurs parties réelle et imaginaire) à l'intérieur des bornes spécifiées, qui minimisent la fonction objectif.
+    * **Fonction Objectif :** Calcule l'erreur quadratique moyenne (Mean Squared Error - MSE) pondérée entre la réflectance calculée et la cible (0) sur la plage angulaire définie. La réflectance est calculée pour les deux polarisations (Rs : S, Rp : P) en utilisant la **Méthode des Matrices de Transfert (TMM)**, accélérée via Numba.
+        $MSE = \\frac{1}{2 \\sum w_i} \\sum_{i} w_i \\left[ (R_{S}(\\theta_i) - 0)^2 + (R_{P}(\\theta_i) - 0)^2 \\right]$
+        où $w_i$ est le poids pour l'angle $\\theta_i$.
+3.  **Affichage :** Les logs, résultats et le graphique final sont mis à jour.
+
+**Sorties**
+
+* **Logs :** Affiche les messages de progression, les paramètres finaux trouvés ($n_H = n+ik$, $n_L = n+ik$, $\epsilon_H = \epsilon'+i\epsilon''$, $\epsilon_L = \epsilon'+i\epsilon''$, Épaisseur) et le statut final. Note : $\epsilon = n^2$.
+* **Résumé des Résultats :** Métriques clés : statut, durée, nombre d'évaluations, MSE final, et les valeurs optimisées pour $n_H, n_L, \epsilon_H, \epsilon_L$, épaisseur. Affiché avec une police plus petite.
+* **Tracé de Réflectance :** Courbes de réflectance $R_S$ (bleu, continu) et $R_P$ (rouge, tirets) en fonction de l'angle d'incidence. L'axe Y est en échelle logarithmique pour mieux voir les faibles réflectances. La zone cible MSE est indiquée par un fond grisé. L'axe X s'arrête à l'angle fin spécifié.
+* **Téléchargement Excel :** Permet de sauvegarder tous les paramètres d'entrée et les résultats détaillés de l'optimisation dans un fichier `.xlsx`.
+
+**Conseils et Problèmes Courants**
+
+* **Vitesse :** Le calcul peut être long. Numba accélère déjà fortement les calculs physiques. Pour aller plus vite :
+    * Réduire `Max Iterations` (compromis sur la qualité).
+    * Augmenter le `Pas angle (°)` pour la cible MSE (compromis sur la représentativité angulaire).
+    * Essayer de cocher `Désactiver Recherche Locale` (compromis sur la précision finale).
+    * Utiliser un ordinateur plus puissant.
+* **Convergence :** Le `dual_annealing` est stochastique ; relancer l'optimisation peut donner des résultats légèrement différents. Si le MSE final est élevé ou si le statut est "Échec/Interrompu", essayez d'augmenter `Max Iterations` ou de revoir les bornes.
+* **Première Exécution :** Le premier lancement après modification du code ou dans un nouvel environnement peut être plus lent car Numba compile les fonctions (`@numba.njit(cache=True)` utilise ensuite le cache).
+* **Police des Résultats :** La taille de police réduite est obtenue via CSS. Si elle ne semble pas correcte, cela pourrait être dû à une mise à jour de Streamlit affectant les sélecteurs CSS.
+"""
+small_font_css = """
+<style>
+/* Cibler les conteneurs de st.metric */
+div[data-testid="stMetric"] {
+    /* Ajustements globaux si nécessaire */
+}
+/* Cibler le label (texte au-dessus de la valeur) */
+div[data-testid="stMetric"] > label[data-testid="stMetricLabel"] > div {
+    font-size: 0.85rem !important; /* Taille réduite pour le label */
+    font-weight: 600 !important; /* Un peu plus gras */
+    /* color: #555 !important; */ /* Optionnel: couleur plus discrète */
+}
+/* Cibler la valeur principale */
+div[data-testid="stMetric"] > div[data-testid="stMetricValue"] {
+    font-size: 0.95rem !important; /* Taille réduite pour la valeur */
+    /* line-height: 1.2 !important; */ /* Optionnel: ajuster l'espacement */
+}
+/* Cibler la valeur delta (si elle était utilisée) */
+/* div[data-testid="stMetric"] > div[data-testid="stMetricDelta"] {
+    font-size: 0.75rem !important;
+} */
+</style>
+"""
 with st.sidebar:
     st.header("Paramètres")
     with st.expander("**Paramètres Physiques**", expanded=True):
@@ -374,6 +460,9 @@ with st.sidebar:
         st.write(f"Bornes: `{format_bounds(bounds_calc)}`")
     st.divider()
     start_button = st.button("🚀 Démarrer Optimisation", type="primary")
+    st.divider()
+    with st.expander("❓ Aide / Informations"):
+        st.markdown(help_text, unsafe_allow_html=True)
 col1, col2 = st.columns([1, 1])
 with col1:
     st.subheader("📈 Statut et Résultats")
@@ -562,6 +651,7 @@ if start_button:
         st.session_state.result_df = None
 log_placeholder.text_area("Logs", "".join(st.session_state.log_messages), height=200, key="log_area_final", disabled=True)
 if st.session_state.result_df is not None:
+    st.markdown(small_font_css, unsafe_allow_html=True)
     with results_placeholder.container():
         st.subheader("Résumé des Résultats")
         df_display = st.session_state.result_df.iloc[0]
@@ -630,5 +720,3 @@ if st.session_state.final_plot_data is not None:
 else:
      with plot_placeholder.container():
           st.info("Le tracé de réflectance apparaîtra ici après une optimisation réussie.")
-st.sidebar.divider()
-st.sidebar.caption(f"Date/Heure actuelle: {datetime.datetime.now(datetime.timezone.utc).astimezone(datetime.datetime.now(datetime.timezone.utc).astimezone().tzinfo).strftime('%Y-%m-%d %H:%M:%S %Z')}")
