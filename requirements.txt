@@ -1,0 +1,9 @@
+# requirements.txt
+
+streamlit
+numpy
+matplotlib
+scipy
+numba
+pandas
+openpyxl
