@@ -264,6 +264,12 @@ def format_complex(c):
     if isinstance(c, complex):
         return f"{c.real:.4f}{c.imag:+.4f}j"
     return str(c)
+def format_complex_eps(c):
+    if isinstance(c, complex):
+        return f"{c.real:.4f}{c.imag:+.4f}j"
+    elif isinstance(c, (int, float)) and np.isfinite(c):
+         return f"{c:.4f}" # Afficher comme réel si pas complexe
+    return str(c) # Fallback
 def format_bounds(bounds_list):
     if not bounds_list or len(bounds_list) != 5: return "N/A"
     names = ["rh", "ch", "rl", "cl", "ep"]
@@ -541,19 +547,26 @@ if st.session_state.result_df is not None:
     with results_placeholder.container():
         st.subheader("Résumé des Résultats")
         df_display = st.session_state.result_df.iloc[0]
-        res_col1, res_col2 = st.columns(2)
+        res_col1, res_col2, res_col3 = st.columns(3)
         with res_col1:
             st.metric("Statut", df_display.get("Status", "N/A"))
-            st.metric("Meilleur MSE Pondéré", df_display.get("Best_MSE_Weighted", "N/A"))
-            st.metric("nH (n+ik)", f"{df_display.get('nH_n','?')}+{df_display.get('nH_k','?')}j")
-            st.metric("nL (n+ik)", f"{df_display.get('nL_n','?')}+{df_display.get('nL_k','?')}j")
-            st.metric("Épaisseur (µm)", df_display.get("Epaisseur_um", "N/A"))
-        with res_col2:
             st.metric("Durée (s)", df_display.get("Opt_Duration_s", "N/A"))
             st.metric("NFEV (Évals Func.)", df_display.get("NFEV", "N/A"))
             st.metric("NIT (Itér. Globales)", df_display.get("NIT_Global", "N/A"))
-            st.metric("Couches (N)", df_display.get("Num_Layers", "N/A"))
-            st.metric("λ (µm)", df_display.get("Lambda_l0", "N/A"))
+        with res_col2:
+            st.metric("Meilleur MSE Pondéré", df_display.get("Best_MSE_Weighted", "N/A"))
+            st.metric("nH (n+ik)", f"{df_display.get('nH_n','?')}{df_display.get('nH_k','?').replace('-','−').replace('+','+') if isinstance(df_display.get('nH_k'), str) else ''}j")
+            st.metric("nL (n+ik)", f"{df_display.get('nL_n','?')}{df_display.get('nL_k','?').replace('-','−').replace('+','+') if isinstance(df_display.get('nL_k'), str) else ''}j")
+            st.metric("Épaisseur (µm)", df_display.get("Epaisseur_um", "N/A"))
+        with res_col3:
+             st.metric("Couches (N)", df_display.get("Num_Layers", "N/A"))
+             st.metric("λ (µm)", df_display.get("Lambda_l0", "N/A"))
+             eps_h_real_str = df_display.get('Epsilon_h_real', '?')
+             eps_h_imag_str = df_display.get('Epsilon_h_imag', '?')
+             st.metric("εH (ε'+iε'')", f"{eps_h_real_str}{eps_h_imag_str.replace('-','−').replace('+','+') if isinstance(eps_h_imag_str, str) else ''}j")
+             eps_l_real_str = df_display.get('Epsilon_l_real', '?')
+             eps_l_imag_str = df_display.get('Epsilon_l_imag', '?')
+             st.metric("εL (ε'+iε'')", f"{eps_l_real_str}{eps_l_imag_str.replace('-','−').replace('+','+') if isinstance(eps_l_imag_str, str) else ''}j")
         with st.expander("Voir tous les détails des paramètres et résultats"):
             st.dataframe(st.session_state.result_df.T)
         excel_data = convert_df_to_excel(st.session_state.result_df)
@@ -571,17 +584,19 @@ if st.session_state.final_plot_data is not None:
         valid_p = ~np.isnan(plot_data["angles_deg"]) & ~np.isnan(plot_data["Rp"])
         ax.plot(plot_data["angles_deg"][valid_s], plot_data["Rs"][valid_s], label='Rs', linestyle='-', color='blue', marker='.', markersize=3)
         ax.plot(plot_data["angles_deg"][valid_p], plot_data["Rp"][valid_p], label='Rp', linestyle='--', color='red', marker='x', markersize=3)
-        if 'last_params' in st.session_state and st.session_state.last_params:
+        xlim_upper = 90.0
+        if 'last_params' in st.session_state and st.session_state.last_params and 'mse_target_angles_deg' in st.session_state.last_params:
              mse_angles = st.session_state.last_params['mse_target_angles_deg']
              if len(mse_angles) > 0:
                   ax.axvspan(mse_angles[0], mse_angles[-1], color='lightgray', alpha=0.3, label='Zone Cible MSE')
+                  xlim_upper = mse_angles[-1] + 1
         ax.set_xlabel("Angle d'incidence (degrés)")
         ax.set_ylabel("Réflectance (échelle log)")
         ax.set_yscale('log')
         ax.grid(True, which='both', linestyle='--', linewidth=0.5)
         ax.legend(loc='best', fontsize='small')
         ax.set_ylim(1e-6, 1.1)
-        ax.set_xlim(0, 90)
+        ax.set_xlim(0, max(1.0, xlim_upper))
         nH_str = format_complex(plot_data['nH'])
         nL_str = format_complex(plot_data['nL'])
         nSub_str = format_complex(plot_data['nSub'])
